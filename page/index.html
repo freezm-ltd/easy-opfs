@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Easy-OPFS Test page</title>
+</head>
+<body>
+    <script type="module">
+        import { OpfsFile } from "./index.js"
+        window.OpfsFile = OpfsFile
+
+        window.test = async (text = "Hello, easy-opfs!!") => {
+            const file = new OpfsFile("test/swag.txt")
+            await file.writeText(text)
+            console.log("Read result:", await file.readText())
+            setTimeout(() => {
+                file.delete()
+            }, 1000);
+        }
+    </script>
+</body>
+</html>
