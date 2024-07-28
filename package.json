@@ -1,5 +1,5 @@
 {
-  "name": "easy-opfs",
+  "name": "@freezm-ltd/easy-opfs",
   "version": "0.0.1",
   "type": "module",
   "description": "Make OPFS easier, with multi-accessing, simultaneous low-level read/write OPFS files",
@@ -26,10 +26,11 @@
   "homepage": "https://github.com/freezm-ltd/easy-opfs#readme",
   "dependencies": {
     "@freezm-ltd/event-target-2": "github:freezm-ltd/EventTarget2",
-    "@freezm-ltd/post-together": "github:freezm-ltd/post-together"
+    "@freezm-ltd/post-together": "github:freezm-ltd/post-together",
+    "@freezm-ltd/stream-utils": "github:freezm-ltd/stream-utils"
   },
   "devDependencies": {
-    "typescript": "^5.5.3",
-    "vite": "^5.3.4"
+    "typescript": "^5.5.4",
+    "vite": "^5.3.5"
   }
 }

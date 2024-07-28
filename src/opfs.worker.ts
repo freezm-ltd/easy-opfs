@@ -8,6 +8,6 @@ async function addHandle(request: OpfsInitRequest): Promise<OpfsInitResponse> {
 }
 
 const messenger = MessengerFactory.new(self)
-messenger.response("add", async (request: OpfsInitRequest) => {
-    return { data: await addHandle(request) }
+messenger.response<OpfsInitRequest, OpfsInitResponse>("add", async (request: OpfsInitRequest) => {
+    return await addHandle(request)
 })

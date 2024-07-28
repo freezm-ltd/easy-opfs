@@ -1,4 +1,5 @@
 import { EventTarget2 } from "@freezm-ltd/event-target-2";
+import { ObjectifiedControlledReadableEndpoint } from "@freezm-ltd/stream-utils";
 export declare function getOpfsHandle(path: string, create?: boolean): Promise<FileSystemFileHandle>;
 export declare function deleteOpfsFile(path: string): Promise<void>;
 type OpfsState = "off" | "initializing" | "on";
@@ -14,43 +15,47 @@ export type OpfsInitRequest = {
     path: string;
 };
 export type OpfsInitResponse = OpfsResponse;
+export type OpfsDataBlockId = number;
+export type OpfsDataBlock = {
+    chunk: Uint8Array;
+    id: OpfsDataBlockId;
+};
 export type OpfsWriteRequest = {
-    source: ReadableStream<Uint8Array> | ArrayBuffer;
+    source?: ArrayBuffer;
     at?: number;
     keepExistingData?: boolean;
 };
-export type OpfsWriteResponse = OpfsResponse;
+export type OpfsWriteResponse = OpfsResponse<{
+    endpoint?: ObjectifiedControlledReadableEndpoint<Uint8Array>;
+}>;
 export type OpfsReadRequest = {
-    sink?: WritableStream<Uint8Array>;
-    at?: number;
+    at: number;
     length?: number;
     noStream?: boolean;
 };
 export type OpfsReadResponse = OpfsResponse<{
-    data?: ReadableStream<Uint8Array> | ArrayBuffer;
+    data: ReadableStream<Uint8Array> | ArrayBuffer;
 }>;
 export type OpfsHeadResponse = OpfsResponse<{
     size: number;
 }>;
-export type OpfsDeleteRequest = {
-    path: string;
-    onlyHandle: boolean;
-};
 export type OpfsDeleteResponse = OpfsResponse;
+export type OpfsCloseResponse = OpfsResponse;
 export declare class OpfsHandle extends EventTarget2 {
-    readonly handleMap?: Map<string, OpfsHandle> | undefined;
+    readonly externalHandleMap?: Map<string, OpfsHandle> | undefined;
     readonly chunk: number;
     private written;
     private handle;
     private messenger;
     path: string;
     state: OpfsState;
-    constructor(handleMap?: Map<string, OpfsHandle> | undefined);
+    constructor(externalHandleMap?: Map<string, OpfsHandle> | undefined);
     init(request: OpfsInitRequest): Promise<OpfsInitResponse>;
     write(request: OpfsWriteRequest): OpfsWriteResponse;
     read(request: OpfsReadRequest): OpfsReadResponse;
     head(): OpfsHeadResponse;
-    delete(request: OpfsDeleteRequest): Promise<OpfsDeleteResponse>;
+    close(): OpfsCloseResponse;
+    delete(): Promise<OpfsDeleteResponse>;
 }
 export declare class OpfsWorker {
     private static _instance;
@@ -59,9 +64,8 @@ export declare class OpfsWorker {
     private broadcastMessenger;
     private constructor();
     static get instance(): OpfsWorker;
-    static checkHandle(path: string): Promise<any>;
+    static checkHandle(path: string): Promise<boolean>;
     static addHandle(request: OpfsInitRequest): Promise<OpfsInitResponse>;
-    static deleteHandle(request: OpfsDeleteRequest): Promise<OpfsDeleteResponse>;
 }
 export declare class OpfsFile extends EventTarget2 {
     readonly path: string;
@@ -70,12 +74,16 @@ export declare class OpfsFile extends EventTarget2 {
     constructor(path: string);
     private _init;
     private init;
-    _read(at: number, length?: number): ReadableStream<any>;
-    read(at?: number, length?: number): Promise<ReadableStream<any>>;
-    _write(source: ArrayBuffer, at: number): Promise<void>;
-    write(source: ReadableStream<Uint8Array> | ArrayBuffer, at?: number, keepExistingData?: boolean): Promise<void>;
-    delete(): Promise<import("@freezm-ltd/post-together/dist/message.js").MessagePayload>;
-    writeText(text: string): Promise<void>;
+    read(at?: number, length?: number): Promise<ReadableStream<Uint8Array>>;
+    _writeArrayBuffer(source: ArrayBuffer, at: number): Promise<OpfsSuccessResponse & {
+        endpoint?: ObjectifiedControlledReadableEndpoint<Uint8Array>;
+    }>;
+    _writeStream(source: ReadableStream<Uint8Array>, at: number): Promise<unknown>;
+    write(source: ReadableStream<Uint8Array> | ArrayBuffer, at?: number, keepExistingData?: boolean): Promise<unknown>;
+    delete(): Promise<OpfsDeleteResponse>;
+    close(): Promise<OpfsCloseResponse>;
+    writeText(text: string): Promise<unknown>;
     readText(): Promise<string>;
+    writeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<unknown>;
 }
 export {};

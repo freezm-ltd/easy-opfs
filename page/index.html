@@ -1,23 +1,59 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Easy-OPFS Test page</title>
 </head>
+
 <body>
     <script type="module">
         import { OpfsFile } from "./index.js"
         window.OpfsFile = OpfsFile
 
-        window.test = async (text = "Hello, easy-opfs!!") => {
-            const file = new OpfsFile("test/swag.txt")
-            await file.writeText(text)
-            console.log("Read result:", await file.readText())
-            setTimeout(() => {
-                file.delete()
-            }, 1000);
+        function sleep(ms) {
+            return new Promise((resolve) => setTimeout(resolve, ms));
+        }
+
+        let init = false
+        window.test = {
+            text: async (text = "Hello, easy-opfs!!", path = "test/text.txt") => {
+
+                const file = new OpfsFile(path)
+                console.log("Write result:", await file.writeText(text))
+                console.log("Read result:", await file.readText())
+                console.log("Delete Result:", await file.delete())
+            },
+            fetch: async (url = "https://sabnzbd.org/tests/internetspeed/20MB.bin", path = "test/fetch.bin") => {
+                if (!init) {
+                    init = true;
+                    (new BroadcastChannel(`easy-opfs:${path}`)).onmessage = console.log
+                }
+                const file = new OpfsFile(path)
+                console.log("Write result:", await file.writeFetch(url))
+                //console.log("Read result:", await file.readText())
+                console.log("Delete Result:", await file.delete())
+            },
+            stream: async (path = "test/stream.txt", num = 1000) =>{
+                let i = 0
+                const char = (new TextEncoder()).encode("0")
+                const stream = new ReadableStream({
+                    async pull(controller) {
+                        console.log(i)
+                        await sleep(100)
+                        controller.enqueue(char)
+                        if (i >= num) controller.close();
+                        i++
+                    }
+                })
+                const file = new OpfsFile(path)
+                await file.write(stream)
+                console.log("END")
+                console.log("Delete Result:", await file.delete())
+            }
         }
     </script>
 </body>
+
 </html>

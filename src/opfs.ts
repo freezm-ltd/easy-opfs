@@ -3,6 +3,7 @@ import { Messenger, MessengerFactory } from "@freezm-ltd/post-together";
 import { normalizePath, path2array, sleep } from "./utils.js";
 // @ts-ignore
 import Worker from "./opfs.worker?worker&inline"
+import { ControlledReadableStream, ControlledWritableStream, Duplex, DuplexEndpoint, lengthCallback, ObjectifiedControlledReadableEndpoint, retryableFetchStream, retryableStream, SwitchableDuplexEndpoint } from "@freezm-ltd/stream-utils";
 
 const IDENTIFIER = "easy-opfs"
 function getKeyWithIdentifier(...key: string[]) {
@@ -45,25 +46,30 @@ export type OpfsInitRequest = {
 };
 export type OpfsInitResponse = OpfsResponse
 
+export type OpfsDataBlockId = number
+export type OpfsDataBlock = {
+    chunk: Uint8Array
+    id: OpfsDataBlockId // for writing integrity check
+}
 export type OpfsWriteRequest = {
-    source: ReadableStream<Uint8Array> | ArrayBuffer
+    source?: ArrayBuffer
     at?: number
     keepExistingData?: boolean
 }
-export type OpfsWriteResponse = OpfsResponse
+export type OpfsWriteResponse = OpfsResponse<{ endpoint?: ObjectifiedControlledReadableEndpoint<Uint8Array> }>
 
 export type OpfsReadRequest = {
-    sink?: WritableStream<Uint8Array>
-    at?: number
+    at: number
     length?: number
     noStream?: boolean
 }
-export type OpfsReadResponse = OpfsResponse<{ data?: ReadableStream<Uint8Array> | ArrayBuffer }>
+export type OpfsReadResponse = OpfsResponse<{ data: ReadableStream<Uint8Array> | ArrayBuffer }>
 
 export type OpfsHeadResponse = OpfsResponse<{ size: number }>
 
-export type OpfsDeleteRequest = { path: string, onlyHandle: boolean }
 export type OpfsDeleteResponse = OpfsResponse
+
+export type OpfsCloseResponse = OpfsResponse
 
 // low-level read/write opfs with FileSystemSyncAccessHandle
 export class OpfsHandle extends EventTarget2 {
@@ -76,7 +82,7 @@ export class OpfsHandle extends EventTarget2 {
     state: OpfsState = "off"
 
     constructor(
-        readonly handleMap?: Map<string, OpfsHandle>
+        readonly externalHandleMap?: Map<string, OpfsHandle> // for self add/remove
     ) {
         super()
     }
@@ -91,29 +97,35 @@ export class OpfsHandle extends EventTarget2 {
 
             // broadcast/public head response
             const broadcastMessenger = MessengerFactory.new(publicHeadBroadcastChannel)
-            broadcastMessenger.response(this.path, (_) => {
-                return { data: this.head() }
+            broadcastMessenger.response<null, OpfsHeadResponse>(this.path, () => {
+                return this.head()
             })
 
             // specific path
             this.messenger = MessengerFactory.new(getOpfsFileChannel(this.path))
-            this.messenger.response("head", (_) => {
-                return { data: this.head() }
+            this.messenger.response<null, OpfsHeadResponse>("head", (_) => {
+                return this.head()
             })
-            this.messenger.response("read", (request: OpfsReadRequest) => {
+            this.messenger.response<OpfsReadRequest, OpfsReadResponse>("read", (request) => {
                 const result = this.read(request)
                 let transfer
                 if (result.ok && result.data) transfer = [result.data];
-                return { data: result, transfer }
+                return transfer ? { payload: result, transfer } : result
             })
-            this.messenger.response("write", (request: OpfsWriteRequest) => {
-                return { data: this.write(request) }
+            this.messenger.response<OpfsWriteRequest, OpfsWriteResponse>("write", (request) => {
+                const result = this.write(request)
+                let transfer
+                if (result.ok && result.endpoint) transfer = [result.endpoint.readable, result.endpoint.writable]
+                return transfer ? { payload: result, transfer } : result
             })
-            this.messenger.response("delete", async (request: OpfsDeleteRequest) => {
-                return { data: await this.delete(request) }
+            this.messenger.response<null, OpfsCloseResponse>("delete", async (_) => {
+                return await this.delete()
+            })
+            this.messenger.response<null, OpfsDeleteResponse>("close", async (_) => {
+                return this.close()
             })
 
-            this.handleMap?.set(this.path, this)
+            this.externalHandleMap?.set(this.path, this)
             return { ok: true };
         } catch (e) {
             return { ok: false, error: e };
@@ -124,32 +136,27 @@ export class OpfsHandle extends EventTarget2 {
         const _this = this
         const handle = this.handle!
         let at = request.at || request.keepExistingData ? this.written : 0
-        const source = request.source
 
         // buffer
-        if (source instanceof ArrayBuffer) {
-            handle.write(source, { at });
-            handle.flush()
+        if (request.source) {
+            handle.write(request.source, { at });
+            if (_this.written < at) _this.written = at;
             return { ok: true }
         }
 
-        // stream
-        const stream = new WritableStream<Uint8Array>({
-            write(chunk) {
-                handle.write(chunk, { at });
-                //handle.flush()
-                at += chunk.length;
-                if (_this.written < at) _this.written = at;
-            },
-            close() {
-                handle.flush()
-            },
-            abort() {
-                handle.flush()
-            }
-        });
-        source.pipeTo(stream);
-        return { ok: true }
+        // stream with ControlledStream(for integrity)
+        const consumer = async (data: Uint8Array) => {
+            handle.write(data, { at });
+            at += data.length;
+            if (_this.written < at) _this.written = at;
+        }
+
+        const { endpoint1, endpoint2 } = new Duplex()
+        const writable = new ControlledWritableStream(consumer)
+        writable.endpoint.switch(endpoint1)
+        const { endpoint } = DuplexEndpoint.transferify(endpoint2)
+
+        return { ok: true, endpoint }
     }
 
     read(request: OpfsReadRequest): OpfsReadResponse {
@@ -161,7 +168,7 @@ export class OpfsHandle extends EventTarget2 {
         let at = start;
 
         // buffer
-        if (!request.sink && request.noStream) {
+        if (request.noStream) {
             const data = new ArrayBuffer(length);
             handle.read(data, { at });
             return { ok: true, data }
@@ -189,28 +196,40 @@ export class OpfsHandle extends EventTarget2 {
             }
         });
 
-        if (!request.sink) {
-            return { ok: true, data: stream }
-        }
-
-        stream.pipeTo(request.sink)
-        return { ok: true }
+        return { ok: true, data: stream }
     }
 
     head(): OpfsHeadResponse {
         return { ok: true, size: this.written }
     }
 
-    async delete(request: OpfsDeleteRequest): Promise<OpfsDeleteResponse> {
-        try {
-            this.handle!.close()
-            this.messenger!.deresponse()
-            this.handleMap?.delete(this.path)
-            if (!request.onlyHandle) await deleteOpfsFile(this.path);
-            return { ok: true }
-        } catch (error) {
-            return { ok: false, error }
+    close(): OpfsCloseResponse {
+        if (this.handle) {
+            try {
+                this.handle.flush()
+                this.handle.close()
+                this.messenger?.deresponse()
+                this.externalHandleMap?.delete(this.path)
+                this.handle = undefined
+                return { ok: true }
+            } catch (error) {
+                return { ok: false, error }
+            }
         }
+        return { ok: true }
+    }
+
+    async delete(): Promise<OpfsDeleteResponse> {
+        const close = this.close()
+        if (close.ok) {
+            try {
+                await deleteOpfsFile(this.path)
+                return { ok: true }
+            } catch (error) {
+                return { ok: false, error }
+            }
+        }
+        return close
     }
 }
 
@@ -232,28 +251,29 @@ export class OpfsWorker {
     }
 
     static async checkHandle(path: string) {
-        return (await this.instance.broadcastMessenger.request(path, { data: undefined })).data.ok
+        const response = await this.instance.broadcastMessenger.request<null, OpfsResponse>(path, null)
+        return response.ok
     }
 
     static async addHandle(request: OpfsInitRequest): Promise<OpfsInitResponse> {
         // create OpfsHandle
-        const workerResponse = (await this.instance.workerMessenger.request("add", { data: request })).data
+        const workerResponse = await this.instance.workerMessenger.request<OpfsInitRequest, OpfsInitResponse>("add", request)
         if (workerResponse.ok) return workerResponse;
 
         // fail to create OpfsHandle -> maybe file is locked, other worker has OpfsHandle
         // send head request -> if no response, wait forever | TODO: set timeout?
-        const broadcastResponse = (await this.instance.broadcastMessenger.request(request.path, { data: undefined })).data
+        const broadcastResponse = await this.instance.broadcastMessenger.request<null, OpfsResponse>(request.path, null)
         if (broadcastResponse.ok) return broadcastResponse;
 
         throw new Error("OpfsWorkerAddHandleError: Cannot create/request OpfsHandle.")
     }
 
-    static async deleteHandle(request: OpfsDeleteRequest): Promise<OpfsDeleteResponse> {
-        const response = (await this.instance.workerMessenger.request("delete", { data: request })).data
+    /*static async deleteHandle(): Promise<OpfsDeleteResponse> {
+        const response = await this.instance.workerMessenger.request<null, OpfsDeleteResponse>("delete", null)
         if (response.ok) return response;
 
         throw new Error("OpfsWorkerDeleteHandleError: Cannot delete OpfsHandle.")
-    }
+    }*/
 }
 
 // 
@@ -281,60 +301,66 @@ export class OpfsFile extends EventTarget2 {
         if (this.state === "off") return await this._init();
     }
 
-    _read(at: number, length?: number) {
-        const { readable, writable } = new TransformStream({
-            transform(chunk: Uint8Array, controller) {
-                controller.enqueue(chunk)
-                at += chunk.length
-                if (length) length -= chunk.length;
-            }
-        })
-
-        const task = async () => {
-            while (true) {
-                try {
-                    const result = await this.messenger.request("read", { data: { at, length } })
-                    if (!result.data.ok) throw new Error("OpfsFileReadError: OpfsWorker returned error: ", result.data.error);
-                    await result.data.data.pipeTo(writable, { preventClose: true, preventAbort: true, preventCancel: true })
-                    await writable.close()
-                    break;
-                } catch (e) {
-                    await this._init() // maybe connection with worker(from other tab) is broken, create new worker or revalidate connection
-                }
-            }
+    async read(at: number = 0, length?: number) {
+        const requestAsContext: OpfsReadRequest = { at, length }
+        const readableGenerator = async (context: OpfsReadRequest) => {
+            await this.init()
+            const response = await this.messenger.request<OpfsReadRequest, OpfsReadResponse>("read", context)
+            if (!response.ok) {
+                await this._init() // maybe connection with worker(from other tab) is broken, create new worker or revalidate connection
+                throw new Error("OpfsFileReadError: OpfsWorker returned error", { cause: response.error })
+            };
+            const stream = (response.data as ReadableStream).pipeThrough(lengthCallback((delta) => {
+                context.at += delta // update received bytes
+                if (context.length) context.length -= delta;
+            }))
+            return stream as ReadableStream<Uint8Array>
         }
 
-        task()
-
-        return readable
+        return retryableStream(readableGenerator, requestAsContext, { minSpeed: 0, minDuration: 5_000, slowDown: 0 })
     }
 
-    async read(at: number = 0, length?: number) {
-        await this.init()
-        return this._read(at, length)
-    }
-
-    async _write(source: ArrayBuffer, at: number) {
+    async _writeArrayBuffer(source: ArrayBuffer, at: number) {
         while (true) {
-            try {
-                const result = await this.messenger.request("write", { data: { source, at } })
-                if (!result.data.ok) throw new Error("OpfsFileWriteError: OpfsWorker returned error: ", result.data.error);
+            try { // retry loop (no transfer)
+                const response = await this.messenger.request<OpfsWriteRequest, OpfsWriteResponse>("write", { source, at })
+                if (!response.ok) throw new Error("OpfsFileWriteError: OpfsWorker returned error", { cause: response.error });
                 // @ts-ignore
                 source.transfer(0) // detach ArrayBuffer for GC
-                return
+                return response
             } catch (e) {
                 await this._init() // maybe connection with worker(from other tab) is broken, create new worker or revalidate connection
             }
         }
     }
 
-    async write(source: ReadableStream<Uint8Array> | ArrayBuffer, at?: number, keepExistingData?: boolean) {
-        await this.init()
+    async _writeStream(source: ReadableStream<Uint8Array>, at: number) {
+        const requestAsContext = { at }
+        const endpointGenerator = async (context: OpfsWriteRequest) => {
+            let response
+            while (true) {
+                try {
+                    response = await this.messenger.request<OpfsWriteRequest, OpfsWriteResponse>("write", context)
+                    break
+                } catch (e) {
+                    await this._init() // maybe connection with worker(from other tab) is broken, create new worker or revalidate connection
+                }
+            }
+            if (!response.ok) throw new Error("OpfsFileWriteError: OpfsWorker returned error", { cause: response.error });
+            return DuplexEndpoint.instancify(response.endpoint!)
+        }
+        const endpoint = new SwitchableDuplexEndpoint(endpointGenerator, requestAsContext)
+        const stream = new ControlledReadableStream(source, endpoint, undefined, (chunk) => { requestAsContext.at += chunk.length })
+        return await stream.waitFor("close")
+    }
 
+    async write(source: ReadableStream<Uint8Array> | ArrayBuffer, at?: number, keepExistingData: boolean = true) {
+        await this.init()
         if (!at) {
             if (keepExistingData) { // get written size
-                const head = await this.messenger.request("head", { data: undefined })
-                at = head.data.size as number
+                const head = await this.messenger.request<null, OpfsHeadResponse>("head", null)
+                if (!head.ok) throw new Error("OpfsHeadError: OpfsWorker returned error", { cause: head.error });
+                at = head.size as number
             } else {
                 at = 0
             }
@@ -342,34 +368,46 @@ export class OpfsFile extends EventTarget2 {
 
         // buffer
         if (source instanceof ArrayBuffer) {
-            return await this._write(source, at)
+            const result = await this._writeArrayBuffer(source, at)
+            await this.close()
+            return result
         }
 
         // stream
-        const _this = this
-        let index = at
-        const sink = new WritableStream({
-            async write(chunk: Uint8Array) {
-                await _this._write(chunk.buffer, index)
-                index += chunk.length
-            }
-        })
-        await source.pipeTo(sink)
+        const result = await this._writeStream(source, at)
+        await this.close()
+        return result
     }
 
     async delete() {
-        return await this.messenger.request("delete", { data: { path: this.path } })
+        await this.init()
+        const result = await this.messenger.request<null, OpfsDeleteResponse>("delete", null)
+        if (result.ok) this.state = "off";
+        return result
+    }
+
+    async close() {
+        const result = await this.messenger.request<null, OpfsCloseResponse>("close", null)
+        if (result.ok) this.state = "off";
+        return result
     }
 
     // utils
 
     async writeText(text: string) {
         const encoded = (new TextEncoder()).encode(text)
-        await this.write(encoded.buffer)
+        return await this.write(encoded.buffer)
     }
 
     async readText() {
         const stream = await this.read();
-        return await (new Response(stream)).text()
+        const result = await (new Response(stream)).text()
+        await this.close()
+        return result
+    }
+
+    async writeFetch(input: RequestInfo | URL, init?: RequestInit) {
+        const stream = retryableFetchStream(input, init)
+        return await this.write(stream)
     }
 }
