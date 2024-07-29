@@ -74,7 +74,10 @@ export declare class OpfsFile extends EventTarget2 {
     constructor(path: string);
     private _init;
     private init;
-    read(at?: number, length?: number): Promise<ReadableStream<Uint8Array>>;
+    head(): Promise<OpfsSuccessResponse & {
+        size: number;
+    }>;
+    read(at?: number, length?: number): ReadableStream<Uint8Array>;
     _writeArrayBuffer(source: ArrayBuffer, at: number): Promise<OpfsSuccessResponse & {
         endpoint?: ObjectifiedControlledReadableEndpoint<Uint8Array>;
     }>;

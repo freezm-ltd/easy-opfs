@@ -3,7 +3,7 @@ import { Messenger, MessengerFactory } from "@freezm-ltd/post-together";
 import { normalizePath, path2array, sleep } from "./utils.js";
 // @ts-ignore
 import Worker from "./opfs.worker?worker&inline"
-import { ControlledReadableStream, ControlledWritableStream, Duplex, DuplexEndpoint, lengthCallback, ObjectifiedControlledReadableEndpoint, retryableFetchStream, retryableStream, SwitchableDuplexEndpoint } from "@freezm-ltd/stream-utils";
+import { ControlledReadableStream, ControlledWritableStream, Duplex, DuplexEndpoint, Flowmeter, lengthCallback, ObjectifiedControlledReadableEndpoint, retryableFetchStream, retryableStream, SwitchableDuplexEndpoint, SwitchableReadableStream } from "@freezm-ltd/stream-utils";
 
 const IDENTIFIER = "easy-opfs"
 function getKeyWithIdentifier(...key: string[]) {
@@ -250,21 +250,19 @@ export class OpfsWorker {
         return OpfsWorker._instance
     }
 
-    static async checkHandle(path: string) {
-        const response = await this.instance.broadcastMessenger.request<null, OpfsResponse>(path, null)
-        return response.ok
+    static async checkHandle(path: string): Promise<boolean> {
+        try {
+            return (await this.instance.broadcastMessenger.request<null, OpfsResponse>(path, null, undefined, 100)).ok
+        } catch {
+            return false
+        }
     }
 
     static async addHandle(request: OpfsInitRequest): Promise<OpfsInitResponse> {
-        // create OpfsHandle
-        const workerResponse = await this.instance.workerMessenger.request<OpfsInitRequest, OpfsInitResponse>("add", request)
-        if (workerResponse.ok) return workerResponse;
-
-        // fail to create OpfsHandle -> maybe file is locked, other worker has OpfsHandle
-        // send head request -> if no response, wait forever | TODO: set timeout?
-        const broadcastResponse = await this.instance.broadcastMessenger.request<null, OpfsResponse>(request.path, null)
-        if (broadcastResponse.ok) return broadcastResponse;
-
+        // check other worker has OpfsHandle
+        if (await this.checkHandle(request.path)) return { ok: true };
+        const response = await this.instance.workerMessenger.request<OpfsInitRequest, OpfsInitResponse>("init", request)
+        if (response.ok) return response;
         throw new Error("OpfsWorkerAddHandleError: Cannot create/request OpfsHandle.")
     }
 
@@ -301,23 +299,40 @@ export class OpfsFile extends EventTarget2 {
         if (this.state === "off") return await this._init();
     }
 
-    async read(at: number = 0, length?: number) {
+    async head() {
+        const head = await this.messenger.request<null, OpfsHeadResponse>("head", null)
+        if (!head.ok) throw new Error("OpfsHeadError: OpfsWorker returned error", { cause: head.error });
+        return head
+    }
+
+    read(at: number = 0, length?: number) {
+        let isChecking = true
         const requestAsContext: OpfsReadRequest = { at, length }
-        const readableGenerator = async (context: OpfsReadRequest) => {
+        const generator = async (context: OpfsReadRequest) => {
             await this.init()
             const response = await this.messenger.request<OpfsReadRequest, OpfsReadResponse>("read", context)
-            if (!response.ok) {
-                await this._init() // maybe connection with worker(from other tab) is broken, create new worker or revalidate connection
-                throw new Error("OpfsFileReadError: OpfsWorker returned error", { cause: response.error })
-            };
-            const stream = (response.data as ReadableStream).pipeThrough(lengthCallback((delta) => {
+            if (!response.ok) throw new Error("OpfsFileReadError: OpfsWorker returned error", { cause: response.error });
+            const stream = (response.data as ReadableStream<Uint8Array>).pipeThrough(lengthCallback((delta) => {
                 context.at += delta // update received bytes
                 if (context.length) context.length -= delta;
             }))
+            isChecking = false
             return stream as ReadableStream<Uint8Array>
         }
-
-        return retryableStream(readableGenerator, requestAsContext, { minSpeed: 0, minDuration: 5_000, slowDown: 0 })
+        const switchable = new SwitchableReadableStream(generator, requestAsContext)
+        const flow = new Flowmeter<Uint8Array>((chunk) => chunk.length)
+        const stream = switchable.stream.pipeThrough(flow)
+        const check = async () => {
+            if (isChecking) return;
+            isChecking = true
+            if (!await OpfsWorker.checkHandle(this.path)) {
+                await this._init() // maybe connection with worker(from other tab) is broken, create new worker or revalidate connection
+                await switchable.switch()
+            }
+            isChecking = false
+        }
+        flow.addTrigger(info => info.flow === 0, check, 1_000, 0)
+        return stream
     }
 
     async _writeArrayBuffer(source: ArrayBuffer, at: number) {
@@ -358,9 +373,7 @@ export class OpfsFile extends EventTarget2 {
         await this.init()
         if (!at) {
             if (keepExistingData) { // get written size
-                const head = await this.messenger.request<null, OpfsHeadResponse>("head", null)
-                if (!head.ok) throw new Error("OpfsHeadError: OpfsWorker returned error", { cause: head.error });
-                at = head.size as number
+                at = (await this.head()).size
             } else {
                 at = 0
             }
@@ -369,13 +382,13 @@ export class OpfsFile extends EventTarget2 {
         // buffer
         if (source instanceof ArrayBuffer) {
             const result = await this._writeArrayBuffer(source, at)
-            await this.close()
+            //await this.close()
             return result
         }
 
         // stream
         const result = await this._writeStream(source, at)
-        await this.close()
+        //await this.close()
         return result
     }
 
@@ -402,7 +415,7 @@ export class OpfsFile extends EventTarget2 {
     async readText() {
         const stream = await this.read();
         const result = await (new Response(stream)).text()
-        await this.close()
+        //await this.close()
         return result
     }
 

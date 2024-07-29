@@ -35,7 +35,7 @@
                 //console.log("Read result:", await file.readText())
                 console.log("Delete Result:", await file.delete())
             },
-            stream: async (path = "test/stream.txt", num = 1000) =>{
+            stream: async (path = "test/stream.txt", num = 1000) => {
                 let i = 0
                 const char = (new TextEncoder()).encode("0")
                 const stream = new ReadableStream({
@@ -51,6 +51,43 @@
                 await file.write(stream)
                 console.log("END")
                 console.log("Delete Result:", await file.delete())
+            },
+            read: async (path = "test/read.txt") => {
+                const file = new OpfsFile(path)
+                //await file.writeText("read test")
+                let j = 0
+                const decode = (a) => (new TextDecoder()).decode(a)
+                const writable = new WritableStream({
+                    write(chunk) {
+                        console.log("read:", j, decode(chunk))
+                        j++
+                    }
+                })
+                file.read(0, Number.MAX_SAFE_INTEGER).pipeTo(writable)
+            },
+            readwrite: async (path = "test/readwrite.txt", num = 1000) => {
+                const file = new OpfsFile(path)
+                let i = 0
+                const char = (new TextEncoder()).encode("0")
+                const readable = new ReadableStream({
+                    async pull(controller) {
+                        console.log("write:", i)
+                        await sleep(100)
+                        controller.enqueue(char)
+                        if (i >= num) controller.close();
+                        i++
+                    }
+                })
+                let j = 0
+                const decode = (a) => (new TextDecoder()).decode(a)
+                const writable = new WritableStream({
+                    write(chunk) {
+                        console.log("read:", j, decode(chunk))
+                        j++
+                    }
+                })
+                file.write(readable)
+                file.read(0, Number.MAX_SAFE_INTEGER).pipeTo(writable)
             }
         }
     </script>

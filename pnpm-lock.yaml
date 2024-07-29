@@ -16,7 +16,7 @@ importers:
         version: https://codeload.github.com/freezm-ltd/post-together/tar.gz/9f2dea09e016bd44ff5dfbeea0e35368c5bf7bef
       '@freezm-ltd/stream-utils':
         specifier: github:freezm-ltd/stream-utils
-        version: https://codeload.github.com/freezm-ltd/stream-utils/tar.gz/149f1fae8e50ace9058de904464b9ee769a7fbdd
+        version: https://codeload.github.com/freezm-ltd/stream-utils/tar.gz/03153d599fca211c498fdb16813c8cd039c9ae30
     devDependencies:
       typescript:
         specifier: ^5.5.4
@@ -173,8 +173,8 @@ packages:
     resolution: {tarball: https://codeload.github.com/freezm-ltd/post-together/tar.gz/9f2dea09e016bd44ff5dfbeea0e35368c5bf7bef}
     version: 0.0.1
 
-  '@freezm-ltd/stream-utils@https://codeload.github.com/freezm-ltd/stream-utils/tar.gz/149f1fae8e50ace9058de904464b9ee769a7fbdd':
-    resolution: {tarball: https://codeload.github.com/freezm-ltd/stream-utils/tar.gz/149f1fae8e50ace9058de904464b9ee769a7fbdd}
+  '@freezm-ltd/stream-utils@https://codeload.github.com/freezm-ltd/stream-utils/tar.gz/03153d599fca211c498fdb16813c8cd039c9ae30':
+    resolution: {tarball: https://codeload.github.com/freezm-ltd/stream-utils/tar.gz/03153d599fca211c498fdb16813c8cd039c9ae30}
     version: 0.0.1
 
   '@rollup/rollup-android-arm-eabi@4.19.1':
@@ -401,7 +401,7 @@ snapshots:
     dependencies:
       '@freezm-ltd/event-target-2': https://codeload.github.com/freezm-ltd/EventTarget2/tar.gz/11ff2085067d0ab323ed7474ffd8b03f770d6303
 
-  '@freezm-ltd/stream-utils@https://codeload.github.com/freezm-ltd/stream-utils/tar.gz/149f1fae8e50ace9058de904464b9ee769a7fbdd':
+  '@freezm-ltd/stream-utils@https://codeload.github.com/freezm-ltd/stream-utils/tar.gz/03153d599fca211c498fdb16813c8cd039c9ae30':
     dependencies:
       '@freezm-ltd/event-target-2': https://codeload.github.com/freezm-ltd/EventTarget2/tar.gz/11ff2085067d0ab323ed7474ffd8b03f770d6303
 
